@@ -1,0 +1,63 @@
+name: Build UCM
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-Xml -Path src/UltimateCameraMod.V3/UltimateCameraMod.V3.csproj -XPath '//Version').Node.InnerText.Trim()
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "zip=UltimateCameraMod_v$v.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Publish self-contained win-x64
+        run: >
+          dotnet publish src/UltimateCameraMod.V3/UltimateCameraMod.V3.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o publish
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          Copy-Item ucm_presets -Destination publish/ucm_presets -Recurse
+          Copy-Item LICENSE, README.md -Destination publish/
+          Compress-Archive -Path publish/* -DestinationPath $env:ZIP
+        env:
+          ZIP: ${{ steps.ver.outputs.zip }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UltimateCameraMod-win-x64
+          path: ${{ steps.ver.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.ver.outputs.zip }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $env:ZIP --clobber
+          } else {
+            gh release create $env:GITHUB_REF_NAME $env:ZIP --title $env:GITHUB_REF_NAME --generate-notes
+          }
